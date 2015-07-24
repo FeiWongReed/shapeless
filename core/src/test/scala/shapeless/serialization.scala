@@ -1065,7 +1065,9 @@ class SerializationTests {
 
   @Test
   def testFunctor {
-    assertSerializable(Functor[Some])
+    val f = Functor[Some]
+    f.map(Some(2))(_.toString)
+    assertSerializable(f)
     assertSerializable(Functor[Option])
     assertSerializable(Functor[Tree])
     assertSerializable(Functor[List])
