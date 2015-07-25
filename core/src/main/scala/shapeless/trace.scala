@@ -67,26 +67,35 @@ trait TraceLookupExtension extends LazyExtension with TraceTypes {
 
   def initialState = ThisState
 
-  def derive(
-    state0: State,
-    extState: ThisState,
-    update: (State, ThisState) => State )(
-    instTpe0: Type
-  ): Option[Either[String, (State, Instance)]] =
-    instTpe0 match {
-      case TraceTpe(tpe) =>
-        Some {
-          state0.lookup(instTpe0).left.flatMap { state =>
-            ctx.derive(state)(tpe).right.map{case (state0, inst0) =>
-              val actualType1 = appliedType(traceTpe, List(inst0.actualTpe))
-              val (state1, inst) = setTree(state0)(instTpe0, q"_root_.shapeless.Trace.mkTrace[${inst0.actualTpe}](${inst0.ident})", actualType1)
-              println(s"$tpe trace:\n${inst0.ident}\n${state1.dict.map{case (k, v) => s"$k\n  $v\n"}.mkString("\n")}")
-              (state1, inst)
-            }
-          }
-        }
-
-      case _ => None
+  private def matchTraceTpe(tpe: Type): LazyStateT[Option[Type]] =
+    LazyStateT { state =>
+      (state, tpe match {
+        case TraceTpe(tTpe) if !state.dict.contains(TypeWrapper(tpe)) => Some(tTpe)
+        case _ => None
+      })
     }
+
+  def derive(
+    get: LazyState => ThisState,
+    update: (LazyState, ThisState) => LazyState )(
+    instTpe0: Type
+  ): LazyStateT[Option[Either[String, Instance]]] =
+    matchTraceTpe(instTpe0)
+      .flatMap {
+        case None => LazyStateT.point(None)
+        case Some(tpe) =>
+          LazyStateT(_.openInst(instTpe0))
+            .flatMap(_ => ctx.derive(tpe))
+            .flatMap{
+              case l @ Left(_) =>
+                LazyStateT(state => (state.failedInst(instTpe0), l))
+              case Right(inst0) =>
+                val actualType = appliedType(traceTpe, List(inst0.actualTpe))
+                val tree = q"_root_.shapeless.Trace.mkTrace[${inst0.actualTpe}](${inst0.ident})"
+                LazyStateT(_.closeInst(instTpe0, tree, actualType))
+                  .map(Right(_))
+            }
+            .map(Some(_))
+      }
 
 }

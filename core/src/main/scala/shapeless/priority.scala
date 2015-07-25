@@ -122,10 +122,10 @@ trait PriorityLookupExtension extends LazyExtension with PriorityTypes {
   case class ThisState(
     priorityLookups: List[TypeWrapper]
   ) {
-    def addPriorityLookup(tpe: Type): ThisState =
-      copy(priorityLookups = TypeWrapper(tpe) :: priorityLookups)
-    def removePriorityLookup(tpe: Type): ThisState =
-      copy(priorityLookups = priorityLookups.filter(_ != TypeWrapper(tpe)))
+    def addPriorityLookup(tpe: Type*): ThisState =
+      copy(priorityLookups = tpe.toList.map(TypeWrapper(_)) ::: priorityLookups)
+    def removePriorityLookup(tpe: Type*): ThisState =
+      tpe.foldLeft(this)((s, t) => s.copy(priorityLookups = priorityLookups.filter(_ != TypeWrapper(t))))
   }
 
   def id = "priority"
@@ -133,105 +133,146 @@ trait PriorityLookupExtension extends LazyExtension with PriorityTypes {
   def initialState = ThisState(Nil)
 
   def derivePriority(
-    state: State,
-    extState: ThisState,
-    update: (State, ThisState) => State )(
+    get: LazyState => ThisState,
+    update: (LazyState, ThisState) => LazyState )(
     priorityTpe: Type,
     highInstTpe: Type,
     lowInstTpe: Type,
     mask: String
-  ): Option[(State, Instance)] = {
-    val high = {
-      val extState1 = extState
-        .addPriorityLookup(priorityTpe)
-      val state1 = update(state, extState1)
-
-      ctx.derive(state1)(highInstTpe)
-        .right.toOption
-        .flatMap{case (state2, inst) =>
-          if (inst.inst.isEmpty)
-            resolve0(state2)(highInstTpe)
-              .map{case (s, tree, tpe) => (s, tree, tree, tpe) }
-          else
-            Some((state2, inst.ident, inst.inst.get, inst.actualTpe))
+  ): LazyStateT[Option[Instance]] = {
+    val high0: LazyStateT[Option[(Tree, Type)]] = {
+      def open[T](t: T) =
+        LazyStateT[T] { state =>
+          val l = state.open.map(_.instTpe).takeWhile(tpe => !(tpe =:= highInstTpe))
+          val extState1 = get(state)
+            .addPriorityLookup(l: _*)
+          (update(state, extState1), t)
         }
-        .filter {case (_, _, actualTree, _) =>
-          mask.isEmpty || {
-            actualTree match {
-              case TypeApply(method, other) =>
-                !method.toString().endsWith(mask)
-              case _ =>
-                true
+      def close[T](t: T) =
+        LazyStateT[T] { state =>
+          val l = state.open.map(_.instTpe).takeWhile(tpe => !(tpe =:= highInstTpe))
+          val extState1 = get(state)
+            .removePriorityLookup(l: _*)
+          (update(state, extState1), t)
+        }
+
+      open(())
+        .flatMap { _ =>
+          ctx.derive(highInstTpe).map(_.right.toOption)
+        }
+        .flatMap {
+          case None => LazyStateT.point(None)
+          case Some(inst) =>
+            if (inst.inst.isEmpty)
+              resolve0(highInstTpe)
+                .map(_.map{case (tree, tpe) => (tree, tree, tpe) })
+            else
+              LazyStateT.point(Some((inst.ident, inst.inst.get, inst.actualTpe)))
+        }
+        .map{
+          _.filter { case (_, actualTree, _) =>
+            mask.isEmpty || {
+              actualTree match {
+                case TypeApply(method, other) =>
+                  !method.toString().endsWith(mask)
+                case _ =>
+                  true
+              }
             }
           }
-        }
-        .map{case (state2, tree0, _, actualTpe) =>
-          val (tree, actualType) =
+          .map { case (tree0, _, actualTpe) =>
             if (mask.isEmpty)
               (tree0, actualTpe)
             else {
               val mTpe = internal.constantType(Constant(mask))
               (q"_root_.shapeless.Mask.mkMask[$mTpe, $actualTpe]($tree0)", appliedType(maskTpe, List(mTpe, actualTpe)))
             }
-
-          val extState2 = extState1
-            .removePriorityLookup(priorityTpe)
-
-          (
-            update(state2, extState2),
-            q"_root_.shapeless.Priority.High[$actualType]($tree)",
-            appliedType(highPriorityTpe, List(actualType))
-          )
+          }
+        }
+        .flatMap(close)
+        .map{
+          _.map { case (tree, actualType) =>
+            (q"_root_.shapeless.Priority.High[$actualType]($tree)", appliedType(highPriorityTpe, List(actualType)))
+          }
         }
     }
 
-    def low =
-      ctx.derive(state)(lowInstTpe)
-        .right.toOption
-        .map{case (state1, inst) =>
-          (state1, q"_root_.shapeless.Priority.Low[${inst.actualTpe}](${inst.ident})", appliedType(lowPriorityTpe, List(inst.actualTpe)))
+    val low0: LazyStateT[Option[(Tree, Type)]] =
+      ctx.derive(lowInstTpe).map(_.right.toOption)
+        .map{
+          _.map { inst =>
+            (q"_root_.shapeless.Priority.Low[${inst.actualTpe}](${inst.ident})", appliedType(lowPriorityTpe, List(inst.actualTpe)))
+          }
         }
 
-    high.orElse(low) .map {case (state1, extInst, actualTpe) =>
-      val (state2, inst) = setTree(state1)(priorityTpe, extInst, actualTpe)
-      (state2, inst)
-    }
+    LazyStateT.withRollback(high0)(_.nonEmpty)
+      .flatMap {
+        case s @ Some(_) => LazyStateT.point(s)
+        case None => low0
+      }
+      .flatMap {
+        case None =>
+          LazyStateT(state => (state.failedInst(priorityTpe), None))
+        case Some((tree, tpe)) =>
+          LazyStateT(_.closeInst(priorityTpe, tree, tpe))
+            .map(Some(_))
+      }
   }
 
-  def derive(
-    state0: State,
-    extState: ThisState,
-    update: (State, ThisState) => State )(
-    instTpe0: Type
-  ): Option[Either[String, (State, Instance)]] =
-    instTpe0 match {
-      case PriorityTpe(highTpe, lowTpe) =>
-        Some {
-          if (extState.priorityLookups.contains(TypeWrapper(instTpe0)))
-            Left(s"Not deriving $instTpe0")
+  private def matchPriorityTpe(tpe: Type, get: LazyState => ThisState): LazyStateT[Option[Either[String, (Type, Type)]]] =
+    LazyStateT { state =>
+      (state, tpe match {
+        case PriorityTpe(highTpe, lowTpe)
+          if !state.dict.contains(TypeWrapper(tpe)) &&
+            !get(state).priorityLookups.contains(TypeWrapper(tpe)) => Some(Right((highTpe, lowTpe)))
+        case _ =>
+          if (get(state).priorityLookups.contains(TypeWrapper(tpe)))
+            Some(Left(s"Not deriving $tpe"))
           else
-            state0.lookup(instTpe0).left.flatMap { state =>
-              val eitherHighTpeMask =
-                highTpe match {
-                  case MaskTpe(mTpe, tTpe) =>
-                    mTpe match {
-                      case ConstantType(Constant(mask: String)) if mask.nonEmpty =>
-                        Right((tTpe, mask))
-                      case _ =>
-                        Left(s"Unsupported mask type: $mTpe")
-                    }
-                  case _ =>
-                    Right((highTpe, ""))
-                }
-
-              eitherHighTpeMask.right.flatMap{case (highTpe, mask) =>
-                derivePriority(state, extState, update)(instTpe0, highTpe, lowTpe, mask)
-                  .toRight(s"Unable to derive $instTpe0")
-              }
-            }
-        }
-
-      case _ => None
+            None
+      })
     }
+
+  def derive(
+    get: LazyState => ThisState,
+    update: (LazyState, ThisState) => LazyState )(
+    instTpe0: Type
+  ): LazyStateT[Option[Either[String, Instance]]] =
+    matchPriorityTpe(instTpe0, get)
+      .flatMap {
+        case None => LazyStateT.point(None)
+        case Some(Left(err)) => LazyStateT.point(Some(Left(err)))
+
+        case Some(Right((highTpe0, lowTpe))) =>
+          LazyStateT(s => (s, s.lookup(instTpe0)))
+            .flatMap {
+              case Some(s) => LazyStateT.point(Right(s))
+              case None =>
+                val eitherHighTpeMask =
+                  highTpe0 match {
+                    case MaskTpe(mTpe, tTpe) =>
+                      mTpe match {
+                        case ConstantType(Constant(mask: String)) if mask.nonEmpty =>
+                          Right((tTpe, mask))
+                        case _ =>
+                          Left(s"Unsupported mask type: $mTpe")
+                      }
+                    case _ =>
+                      Right((highTpe0, ""))
+                  }
+
+                eitherHighTpeMask match {
+                  case Left(err) => LazyStateT.point(Left(err))
+                  case Right((highTpe, mask)) =>
+                    LazyStateT(_.openInst(instTpe0))
+                      .flatMap(_ =>
+                        derivePriority(get, update)(instTpe0, highTpe, lowTpe, mask)
+                          .map(_.toRight(s"Unable to derive $instTpe0"))
+                      )
+                }
+            }
+            .map(Some(_))
+      }
+
 }
 
