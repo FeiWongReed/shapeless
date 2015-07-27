@@ -111,6 +111,21 @@ trait Generic[T] extends Serializable {
   def from(r : Repr) : T
 }
 
+object Generics {
+  final class Generic0 extends Generic[Unit] {
+    type Repr = HNil
+    def to(t: Unit): Repr = HNil
+    def from(l: Repr): Unit = ()
+  }
+  abstract class BiMapGeneric[F, G, Repr0](mapped: Generic.Aux[G, Repr0]) extends Generic[F] {
+    type Repr = Repr0
+    def from0(g: G): F
+    def to0(f: F): G
+    def from(r: Repr): F = from0(mapped.from(r))
+    def to(f: F): Repr = mapped.to(to0(f))
+  }
+}
+
 /** The companion object for the [[Generic]] trait provides a way of obtaining a Generic[T] instance
  * for some T. In addition, it defines [[Generic.Aux]], which is an important implementation technique
  * that can be generally useful.
@@ -680,31 +695,105 @@ class GenericMacros(val c: whitebox.Context) extends CaseClassMacros {
       mkCoproductGeneric(tpe)
   }
 
-  def mkProductGeneric(tpe: Type): Tree = {
-    def mkProductCases: (CaseDef, CaseDef) = {
-      if(tpe =:= typeOf[Unit])
-        (
-          cq"() => _root_.shapeless.HNil",
-          cq"_root_.shapeless.HNil => ()"
-        )
-      else if(isCaseObjectLike(tpe.typeSymbol.asClass)) {
-        val singleton =
-          tpe match {
-            case SingleType(pre, sym) =>
-              c.internal.gen.mkAttributedRef(pre, sym)
-            case TypeRef(pre, sym, List()) if sym.isModule =>
-              c.internal.gen.mkAttributedRef(pre, sym.asModule)
-            case TypeRef(pre, sym, List()) if sym.isModuleClass =>
-              c.internal.gen.mkAttributedRef(pre, sym.asClass.module)
-            case other =>
-              abort(s"Bad case object-like type $tpe")
-          }
+  def tupleGenTpe(n: Int) = n match {
+    case  0 => typeOf[Generics.Generic0]
+    case  1 => typeOf[TupleGenericInstances.TupleGeneric1[_]]
+    case  2 => typeOf[TupleGenericInstances.TupleGeneric2[_, _]]
+    case  3 => typeOf[TupleGenericInstances.TupleGeneric3[_, _, _]]
+    case  4 => typeOf[TupleGenericInstances.TupleGeneric4[_, _, _, _]]
+    case  5 => typeOf[TupleGenericInstances.TupleGeneric5[_, _, _, _, _]]
+    case  6 => typeOf[TupleGenericInstances.TupleGeneric6[_, _, _, _, _, _]]
+    case  7 => typeOf[TupleGenericInstances.TupleGeneric7[_, _, _, _, _, _, _]]
+    case  8 => typeOf[TupleGenericInstances.TupleGeneric8[_, _, _, _, _, _, _, _]]
+    case  9 => typeOf[TupleGenericInstances.TupleGeneric9[_, _, _, _, _, _, _, _, _]]
+    case 10 => typeOf[TupleGenericInstances.TupleGeneric10[_, _, _, _, _, _, _, _, _, _]]
+    case 11 => typeOf[TupleGenericInstances.TupleGeneric11[_, _, _, _, _, _, _, _, _, _, _]]
+    case 12 => typeOf[TupleGenericInstances.TupleGeneric12[_, _, _, _, _, _, _, _, _, _, _, _]]
+    case 13 => typeOf[TupleGenericInstances.TupleGeneric13[_, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 14 => typeOf[TupleGenericInstances.TupleGeneric14[_, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 15 => typeOf[TupleGenericInstances.TupleGeneric15[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 16 => typeOf[TupleGenericInstances.TupleGeneric16[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 17 => typeOf[TupleGenericInstances.TupleGeneric17[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 18 => typeOf[TupleGenericInstances.TupleGeneric18[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 19 => typeOf[TupleGenericInstances.TupleGeneric19[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 20 => typeOf[TupleGenericInstances.TupleGeneric20[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 21 => typeOf[TupleGenericInstances.TupleGeneric21[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+    case 22 => typeOf[TupleGenericInstances.TupleGeneric22[_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _]]
+  }
 
-        (
-          cq"_: $tpe => _root_.shapeless.HNil",
-          cq"_root_.shapeless.HNil => $singleton: $tpe"
-        )
-      } else {
+
+  def mkProductGeneric(tpe: Type): Tree = {
+    lazy val binders = fieldsOf(tpe).map { case (name, tpe) => (TermName(c.freshName("pat")), name, tpe, isVararg(tpe)) }
+    lazy val useBiMap = {
+      val sym = tpe.typeSymbol
+      val isCaseClass = sym.asClass.isCaseClass
+      isCaseClass && binders.lengthCompare(22) <= 0
+    }
+
+    if (tpe =:= typeOf[Unit])
+      q"""
+        new _root_.shapeless.Generics.Generic0: _root_.shapeless.Generic.Aux[$tpe, ${reprTypTree(tpe)}]
+      """
+    else if (isCaseObjectLike(tpe.typeSymbol.asClass)) {
+      val singleton =
+        tpe match {
+          case SingleType(pre, sym) =>
+            c.internal.gen.mkAttributedRef(pre, sym)
+          case TypeRef(pre, sym, List()) if sym.isModule =>
+            c.internal.gen.mkAttributedRef(pre, sym.asModule)
+          case TypeRef(pre, sym, List()) if sym.isModuleClass =>
+            c.internal.gen.mkAttributedRef(pre, sym.asClass.module)
+          case other =>
+            abort(s"Bad case object-like type $tpe")
+        }
+
+      val unitTpe = typeOf[Unit]
+      val repr = reprTypTree(tpe)
+
+      q"""
+        new _root_.shapeless.Generics.BiMapGeneric[$tpe, $unitTpe, $repr](new _root_.shapeless.Generics.Generic0) {
+          def from0(t: $unitTpe): $tpe = $singleton
+          def to0(s: $tpe): $unitTpe = ()
+        } : _root_.shapeless.Generic.Aux[$tpe, $repr]
+      """
+    } else if (isTuple(tpe)) {
+      val tupleGenTpe0 = tupleGenTpe(binders.length).typeSymbol.asClass
+      val mapped =
+        if (binders.isEmpty) q"new $tupleGenTpe0"
+        else q"new $tupleGenTpe0[..${binders.map(_._3)}]"
+      val repr = reprTypTree(tpe)
+      q"$mapped : _root_.shapeless.Generic.Aux[$tpe, $repr]"
+    } else if (useBiMap) {
+      val baseTupleTpe =
+        if (binders.isEmpty) typeOf[Unit]
+        else definitions.TupleClass(binders.length).asType.toType
+      val tpes = binders.map(_._3).map(devarargify)
+      val tupleTpe = if (binders.isEmpty) baseTupleTpe else appliedType(baseTupleTpe, tpes)
+      val tupleGenTpe0 = tupleGenTpe(binders.length).typeSymbol.asClass
+      val repr = reprTypTree(tpe)
+      val tupleFields = binders.zipWithIndex.map{ case (f, idx) =>
+        val name = TermName(s"_${idx + 1}")
+        if (f._4) q"t.$name: _*"
+        else q"t.$name"
+      }
+      val ccFields = binders.map{case (_, name, _, _) => q"cc.$name" }
+
+      val mapped =
+        if (binders.isEmpty) q"new $tupleGenTpe0"
+        else q"new $tupleGenTpe0[..$tpes]"
+      val from = q"${companionRef(tpe)}(..$tupleFields)"
+      val to =
+        if (binders.isEmpty) q"()"
+        else q"${companionRef(baseTupleTpe)}(..$ccFields)"
+
+      q"""
+        new _root_.shapeless.Generics.BiMapGeneric[$tpe, $tupleTpe, $repr]($mapped) {
+          def from0(t: $tupleTpe): $tpe = $from
+          def to0(cc: $tpe): $tupleTpe = $to
+        } : _root_.shapeless.Generic.Aux[$tpe, $repr]
+      """
+    } else {
+      def mkProductCases: (Tree, Tree) = {
         val sym = tpe.typeSymbol
         val isCaseClass = sym.asClass.isCaseClass
         def hasNonGenericCompanionMember(name: String): Boolean = {
@@ -712,15 +801,13 @@ class GenericMacros(val c: whitebox.Context) extends CaseClassMacros {
           mSym != NoSymbol && !isNonGeneric(mSym)
         }
 
-        val binders = fieldsOf(tpe).map { case (name, tpe) => (TermName(c.freshName("pat")), name, tpe, isVararg(tpe)) }
-
         val to =
           if(isCaseClass || hasNonGenericCompanionMember("unapply")) {
             val wcard = Star(Ident(termNames.WILDCARD))  // like pq"_*" except that it does work
             val lhs = pq"${companionRef(tpe)}(..${binders.map(x => if (x._4) pq"${x._1} @ $wcard" else pq"${x._1}")})"
             val rhs =
               binders.foldRight(q"_root_.shapeless.HNil": Tree) {
-                case ((bound, name, tpe, _), acc) =>
+                case ((bound, _, tpe, _), acc) =>
                   tpe match {
                     case ConstantType(c) =>
                       q"_root_.shapeless.::($c, $acc)"
@@ -745,7 +832,7 @@ class GenericMacros(val c: whitebox.Context) extends CaseClassMacros {
             }
 
           val rhs = {
-            val ctorArgs = binders.map { case (bound, name, tpe, vararg) =>
+            val ctorArgs = binders.map { case (bound, _, tpe, vararg) =>
               if (vararg) q"$bound: _*"
               else
                 tpe match {
@@ -766,22 +853,22 @@ class GenericMacros(val c: whitebox.Context) extends CaseClassMacros {
 
         (to, from)
       }
-    }
 
-    val (toCases, fromCases) = {
-      val (to, from) = mkProductCases
-      (List(to), List(from))
-    }
-
-    val clsName = TypeName(c.freshName())
-    q"""
-      final class $clsName extends _root_.shapeless.Generic[$tpe] {
-        type Repr = ${reprTypTree(tpe)}
-        def to(p: $tpe): Repr = (p match { case ..$toCases }).asInstanceOf[Repr]
-        def from(p: Repr): $tpe = p match { case ..$fromCases }
+      val (toCases, fromCases) = {
+        val (to, from) = mkProductCases
+        (List(to), List(from))
       }
-      new $clsName(): _root_.shapeless.Generic.Aux[$tpe, ${reprTypTree(tpe)}]
-    """
+
+      val clsName = TypeName(c.freshName())
+      q"""
+        final class $clsName extends _root_.shapeless.Generic[$tpe] {
+          type Repr = ${reprTypTree(tpe)}
+          def to(p: $tpe): Repr = (p match { case ..$toCases }).asInstanceOf[Repr]
+          def from(p: Repr): $tpe = p match { case ..$fromCases }
+        }
+        new $clsName(): _root_.shapeless.Generic.Aux[$tpe, ${reprTypTree(tpe)}]
+      """
+    }
   }
 
   def mkCoproductGeneric(tpe: Type): Tree = {

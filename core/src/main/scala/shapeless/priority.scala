@@ -135,11 +135,10 @@ trait PriorityLookupExtension extends LazyExtension with PriorityTypes {
   def derivePriority(
     get: LazyState => ThisState,
     update: (LazyState, ThisState) => LazyState )(
-    priorityTpe: Type,
     highInstTpe: Type,
     lowInstTpe: Type,
     mask: String
-  ): LazyStateT[Option[Instance]] = {
+  ): LazyStateT[Option[(Tree, Type)]] = {
     val high0: LazyStateT[Option[(Tree, Type)]] = {
       def open[T](t: T) =
         LazyStateT[T] { state =>
@@ -158,7 +157,7 @@ trait PriorityLookupExtension extends LazyExtension with PriorityTypes {
 
       open(())
         .flatMap { _ =>
-          ctx.derive(highInstTpe).map(_.right.toOption)
+          ctx.derive(highInstTpe, depIfEmpty = false).map(_.right.toOption)
         }
         .flatMap {
           case None => LazyStateT.point(None)
@@ -205,32 +204,31 @@ trait PriorityLookupExtension extends LazyExtension with PriorityTypes {
           }
         }
 
-    LazyStateT.withRollback(high0)(_.nonEmpty)
+    LazyStateT
+      .mix(high0){ (orig, new0, res) =>
+        if (res.nonEmpty) new0.copy(noImpl = orig.noImpl)
+        else orig
+      }
       .flatMap {
         case s @ Some(_) => LazyStateT.point(s)
         case None => low0
-      }
-      .flatMap {
-        case None =>
-          LazyStateT(state => (state.failedInst(priorityTpe), None))
-        case Some((tree, tpe)) =>
-          LazyStateT(_.closeInst(priorityTpe, tree, tpe))
-            .map(Some(_))
       }
   }
 
   private def matchPriorityTpe(tpe: Type, get: LazyState => ThisState): LazyStateT[Option[Either[String, (Type, Type)]]] =
     LazyStateT { state =>
-      (state, tpe match {
-        case PriorityTpe(highTpe, lowTpe)
-          if !state.dict.contains(TypeWrapper(tpe)) &&
-            !get(state).priorityLookups.contains(TypeWrapper(tpe)) => Some(Right((highTpe, lowTpe)))
-        case _ =>
-          if (get(state).priorityLookups.contains(TypeWrapper(tpe)))
-            Some(Left(s"Not deriving $tpe"))
-          else
+      if (get(state).priorityLookups.contains(TypeWrapper(tpe)))
+        (state, Some(Left(s"Not deriving $tpe")))
+      else
+        (state, tpe match {
+          case PriorityTpe(highTpe, lowTpe) =>
+            if (state.lookup(tpe).isEmpty)
+              Some(Right((highTpe, lowTpe)))
+            else
+              None
+          case _ =>
             None
-      })
+        })
     }
 
   def derive(
@@ -246,7 +244,7 @@ trait PriorityLookupExtension extends LazyExtension with PriorityTypes {
         case Some(Right((highTpe0, lowTpe))) =>
           LazyStateT(s => (s, s.lookup(instTpe0)))
             .flatMap {
-              case Some(s) => LazyStateT.point(Right(s))
+              case Some(res) => LazyStateT.point(res)
               case None =>
                 val eitherHighTpeMask =
                   highTpe0 match {
@@ -266,7 +264,14 @@ trait PriorityLookupExtension extends LazyExtension with PriorityTypes {
                   case Right((highTpe, mask)) =>
                     LazyStateT(_.openInst(instTpe0))
                       .flatMap(_ =>
-                        derivePriority(get, update)(instTpe0, highTpe, lowTpe, mask)
+                        derivePriority(get, update)(highTpe, lowTpe, mask)
+                          .flatMap {
+                            case None =>
+                              LazyStateT(state => (state.failedInst(instTpe0), None))
+                            case Some((tree, tpe)) =>
+                              LazyStateT(_.closeInst(instTpe0, tree, tpe))
+                                .map(Some(_))
+                          }
                           .map(_.toRight(s"Unable to derive $instTpe0"))
                       )
                 }

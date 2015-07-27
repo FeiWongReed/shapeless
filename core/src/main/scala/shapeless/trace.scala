@@ -70,7 +70,11 @@ trait TraceLookupExtension extends LazyExtension with TraceTypes {
   private def matchTraceTpe(tpe: Type): LazyStateT[Option[Type]] =
     LazyStateT { state =>
       (state, tpe match {
-        case TraceTpe(tTpe) if !state.dict.contains(TypeWrapper(tpe)) => Some(tTpe)
+        case TraceTpe(tTpe) =>
+          if (state.lookup(tpe).isEmpty)
+            Some(tTpe)
+          else
+            None
         case _ => None
       })
     }

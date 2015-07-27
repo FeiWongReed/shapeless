@@ -67,7 +67,11 @@ trait ScopedLookupExtension extends LazyExtension with ScopedTypes {
   private def matchScopedTpe(tpe: Type): LazyStateT[Option[(String, Type)]] =
     LazyStateT { state =>
       (state, tpe match {
-        case ScopedTpe(scope, tTpe) if !state.dict.contains(TypeWrapper(tpe)) => Some((scope, tTpe))
+        case ScopedTpe(scope, tTpe) =>
+          if (state.lookup(tpe).isEmpty)
+            Some((scope, tTpe))
+          else
+            None
         case _ => None
       })
     }
@@ -140,7 +144,7 @@ trait ScopedLookupExtension extends LazyExtension with ScopedTypes {
 
               LazyStateT(state => (state, state.lookup(instTpe0)))
                 .flatMap {
-                  case Some(inst) => LazyStateT.point(Right(inst))
+                  case Some(res) => LazyStateT.point(res)
                   case None => derive
                 }
             }

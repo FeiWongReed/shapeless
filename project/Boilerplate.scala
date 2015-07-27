@@ -39,6 +39,7 @@ object Boilerplate {
   
   val templates: Seq[Template] = List(
     GenTuplerInstances,
+    GenTupleGenericInstances,
     GenFnToProductInstances,
     GenFnFromProductInstances,
     GenCaseInst,
@@ -153,7 +154,31 @@ object Boilerplate {
       """
     }      
   }
-  
+
+  object GenTupleGenericInstances extends Template {
+    val filename = "tuplegeneric.scala"
+    def content(tv: TemplateVals) = {
+      import tv._
+      block"""
+        |
+        |object TupleGenericInstances {
+        -
+        -  final class TupleGeneric${arity}
+        -    [${`A..N`}] extends Generic[${`(A..N)`}] {
+        -
+        -    type Repr = ${`A::N`}
+        -    def to(t: ${`(A..N)`}): Repr = ${Seq.range(1, arity + 1).map(n => s"t._$n :: ").mkString}HNil
+        -    def from(l0: Repr): ${`(A..N)`} = {
+        -      ${Seq.range(1, arity + 1).map(n => s"val a$n = l${n - 1}.head" + (if (n < arity) s"; val l$n = l${n - 1}.tail" else "")).mkString("; ")}
+        -      ${if (arity > 0) s"Tuple$arity" else ""}(${Seq.range(1, arity + 1).map(n => s"a$n").mkString(", ")})
+        -    }
+        -  }
+        |
+        |}
+      """
+    }
+  }
+
   object GenFnToProductInstances extends Template {
     val filename = "fntoproduct.scala"
 
